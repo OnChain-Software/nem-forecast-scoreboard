@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NEM Forecast Scoreboard</title>
+<meta name="description" content="OnChain Software's day-ahead NEM price forecasts scored every day against AEMO's pre-dispatch, with every forecast locked in before the outcome.">
+<style>
+  :root { --bg:#ffffff; --fg:#1b1f24; --muted:#5b6470; --line:#e3e6ea; --card:#f6f7f9; --good:#1a7f4b; --bad:#b42318; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f1216; --fg:#e7eaee; --muted:#9aa3ad; --line:#2a3038; --card:#171b21; --good:#4cc38a; --bad:#f97066; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  main { max-width:1040px; margin:0 auto; padding:32px 16px 64px; }
+  h1 { font-size:26px; margin:0 0 4px; }
+  h2 { font-size:18px; margin:32px 0 8px; }
+  p { margin:6px 0; }
+  .muted { color:var(--muted); }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; margin-top:20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  .card .k { color:var(--muted); font-size:13px; }
+  .card .v { font-size:24px; font-weight:600; margin-top:2px; }
+  .card .s { color:var(--muted); font-size:13px; }
+  .controls { display:flex; gap:8px; align-items:center; margin:16px 0 8px; flex-wrap:wrap; }
+  select { font:inherit; padding:4px 8px; background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:6px; }
+  .wrap { overflow-x:auto; border:1px solid var(--line); border-radius:10px; }
+  table { border-collapse:collapse; width:100%; font-variant-numeric:tabular-nums; font-size:14px; }
+  th, td { padding:7px 10px; border-bottom:1px solid var(--line); text-align:right; white-space:nowrap; }
+  th { position:sticky; top:0; background:var(--card); font-weight:600; }
+  th:nth-child(-n+3), td:nth-child(-n+3) { text-align:left; }
+  tr:last-child td { border-bottom:none; }
+  .win { color:var(--good); font-weight:600; }
+  .lose { color:var(--bad); }
+  code, .hash { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
+  a { color:inherit; }
+  ul { padding-left:20px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>NEM Forecast Scoreboard</h1>
+  <p class="muted">OnChain Software's day-ahead price forecasts, scored every day against AEMO's 12:30 pre-dispatch for the five NEM regions.</p>
+  <p class="muted">Each forecast is locked in by hash before the market day starts. It is published and scored the day after.</p>
+
+  <div class="cards" id="cards"><div class="card"><div class="k">Loading results…</div></div></div>
+
+  <div class="controls">
+    <label for="region">Region</label>
+    <select id="region"><option value="">All regions</option></select>
+    <span class="muted" id="count"></span>
+  </div>
+  <div class="wrap">
+    <table>
+      <thead><tr>
+        <th>Market day</th><th>Region</th><th>Status</th><th>Spikes</th>
+        <th>OCS spike score</th><th>AEMO spike score</th>
+        <th>OCS price error</th><th>AEMO price error</th><th>Forecast</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+
+  <h2>How it is scored</h2>
+  <ul>
+    <li><b>Forecast:</b> issued by 13:00 AEST the day before (D−1), for the 48 half-hours of market day D (04:00 on D to 04:00 on D+1), in all five regions.</li>
+    <li><b>AEMO comparator:</b> AEMO's 12:30 D−1 pre-dispatch run, as published. This is the first run after day-ahead bids close.</li>
+    <li><b>Actual price:</b> the mean of the six 5-minute dispatch prices in each half-hour.</li>
+    <li><b>Spike score</b> (lower is better): the Brier score for "price above A$300/MWh". OCS publishes a probability. AEMO's forecast counts as 1 if its price is above A$300 and 0 otherwise.</li>
+    <li><b>Price error</b> (lower is better): mean absolute error in A$/MWh over the 48 half-hours.</li>
+  </ul>
+
+  <h2>Rules</h2>
+  <ul>
+    <li>Every day is published, including days AEMO wins.</li>
+    <li>A day with no forecast committed on time shows as <i>missed</i>. Missed days are never backfilled, and scored rows are never changed.</li>
+    <li>Before the market day, only the forecast's SHA-256 hash is published, and it is independently timestamped with <a href="https://opentimestamps.org">OpenTimestamps</a>. The forecast file itself is published the next day, so anyone can check that it matches the hash. The <a href="https://github.com/OnChain-Software/nem-forecast-scoreboard/commits/main">commit history</a> holds the full record.</li>
+    <li>The scoring rules were fixed at launch. Any change will be noted here with a date, and earlier rows will not be re-scored.</li>
+  </ul>
+  <p class="muted">Market data source: AEMO (NEMWeb). This page is not endorsed by AEMO.</p>
+</main>
+<script>
+const fmt = (v, d) => v === "" || v == null ? "–" : Number(v).toFixed(d);
+const mean = a => a.reduce((s, x) => s + x, 0) / a.length;
+
+function parse(text) {
+  const [head, ...lines] = text.trim().split(/\r?\n/);
+  const keys = head.split(",");
+  return lines.filter(Boolean).map(l => Object.fromEntries(l.split(",").map((v, i) => [keys[i], v])));
+}
+
+function card(k, v, s) { return `<div class="card"><div class="k">${k}</div><div class="v">${v}</div><div class="s">${s}</div></div>`; }
+
+function summary(rows) {
+  const ok = rows.filter(r => r.status === "ok");
+  const days = new Set(rows.map(r => r.market_day));
+  if (!ok.length) return card("Scored region-days", "0", `Tracking since launch. ${days.size} day(s) logged.`);
+  const n = ok.length;
+  const sO = mean(ok.map(r => +r.ocs_spike_score)), sA = mean(ok.map(r => +r.aemo_spike_score));
+  const pO = mean(ok.map(r => +r.ocs_price_error)), pA = mean(ok.map(r => +r.aemo_price_error));
+  const winS = ok.filter(r => +r.ocs_spike_score < +r.aemo_spike_score).length;
+  const winP = ok.filter(r => +r.ocs_price_error < +r.aemo_price_error).length;
+  const missed = new Set(rows.filter(r => r.status === "missed").map(r => r.market_day)).size;
+  const first = [...days].sort()[0];
+  return [
+    card("Scored region-days", n, `Since ${first}. ${missed} day(s) missed.`),
+    card("Spike score, OCS vs AEMO", `${fmt(sO, 4)} vs ${fmt(sA, 4)}`, `OCS better on ${winS} of ${n} region-days`),
+    card("Price error, OCS vs AEMO", `A$${fmt(pO, 1)} vs A$${fmt(pA, 1)}`, `OCS better on ${winP} of ${n} region-days`),
+    card("Spikes observed", ok.reduce((s, r) => s + (+r.spikes || 0), 0), "Half-hours above A$300/MWh"),
+  ].join("");
+}
+
+function cls(a, b) { return a === "" || b === "" ? "" : (+a < +b ? "win" : (+a > +b ? "lose" : "")); }
+
+function render(all) {
+  const region = document.getElementById("region").value;
+  const rows = all.filter(r => !region || r.region === region)
+                  .sort((a, b) => b.market_day.localeCompare(a.market_day) || a.region.localeCompare(b.region));
+  document.getElementById("cards").innerHTML = summary(rows);
+  document.getElementById("count").textContent = `${rows.length} rows`;
+  document.getElementById("rows").innerHTML = rows.map(r => {
+    const link = r.status === "ok" || r.status === "late"
+      ? `<a href="forecasts/${r.market_day}.csv">csv</a> · <a href="hashes/${r.market_day}.sha256">hash</a>`
+      : (r.forecast_sha256 ? `<a href="hashes/${r.market_day}.sha256">hash</a>` : "–");
+    return `<tr><td>${r.market_day}</td><td>${r.region.replace(/1$/, "")}</td><td>${r.status}</td>
+      <td>${r.spikes === "" || r.spikes == null ? "–" : r.spikes}</td>
+      <td class="${cls(r.ocs_spike_score, r.aemo_spike_score)}">${fmt(r.ocs_spike_score, 4)}</td>
+      <td>${fmt(r.aemo_spike_score, 4)}</td>
+      <td class="${cls(r.ocs_price_error, r.aemo_price_error)}">${fmt(r.ocs_price_error, 1)}</td>
+      <td>${fmt(r.aemo_price_error, 1)}</td><td>${link}</td></tr>`;
+  }).join("") || `<tr><td colspan="9" class="muted">No scored days yet.</td></tr>`;
+}
+
+fetch("data/results.csv", { cache: "no-store" }).then(r => r.text()).then(text => {
+  const all = parse(text);
+  const sel = document.getElementById("region");
+  [...new Set(all.map(r => r.region))].sort().forEach(g => sel.add(new Option(g.replace(/1$/, ""), g)));
+  sel.onchange = () => render(all);
+  render(all);
+}).catch(() => { document.getElementById("cards").innerHTML = card("Results", "–", "Could not load data/results.csv"); });
+</script>
+</body>
+</html>
