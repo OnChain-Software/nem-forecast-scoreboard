@@ -38,8 +38,8 @@
 <body>
 <main>
   <h1>NEM Forecast Scoreboard</h1>
-  <p class="muted">OnChain Software's day-ahead price forecasts, scored every day against AEMO's 12:30 pre-dispatch for the five NEM regions.</p>
-  <p class="muted">Each forecast is locked in by hash before the market day starts. It is published and scored the day after.</p>
+  <p class="muted">OnChain Software's 24-hour-ahead price forecasts, scored every day against AEMO's 12:30 pre-dispatch for the five NEM regions.</p>
+  <p class="muted">Each forecast is locked in by hash at 12:45 AEST, before any half-hour it covers begins. It is published and scored once the actual prices are out.</p>
 
   <div class="cards" id="cards"><div class="card"><div class="k">Loading results…</div></div></div>
 
@@ -51,7 +51,7 @@
   <div class="wrap">
     <table>
       <thead><tr>
-        <th>Market day</th><th>Region</th><th>Status</th><th>Spikes</th>
+        <th>Issued</th><th>Region</th><th>Status</th><th>Spikes</th>
         <th>OCS spike score</th><th>AEMO spike score</th>
         <th>OCS price error</th><th>AEMO price error</th><th>Forecast</th>
       </tr></thead>
@@ -61,18 +61,18 @@
 
   <h2>How it is scored</h2>
   <ul>
-    <li><b>Forecast:</b> issued by 13:00 AEST the day before (D−1), for the 48 half-hours of market day D (04:00 on D to 04:00 on D+1), in all five regions.</li>
-    <li><b>AEMO comparator:</b> AEMO's 12:30 D−1 pre-dispatch run, as published. This is the first run after day-ahead bids close.</li>
+    <li><b>Forecast:</b> committed by 13:00 AEST each day for the next 47 half-hours, 13:00 that day to 12:30 the next day, in all five regions. Every half-hour starts after the forecast is locked in.</li>
+    <li><b>AEMO comparator:</b> AEMO's 12:30 pre-dispatch run on the same day, as published, over the same half-hours. This is the first run after day-ahead bids close.</li>
     <li><b>Actual price:</b> the mean of the six 5-minute dispatch prices in each half-hour.</li>
     <li><b>Spike score</b> (lower is better): the Brier score for "price above A$300/MWh". OCS publishes a probability. AEMO's forecast counts as 1 if its price is above A$300 and 0 otherwise.</li>
-    <li><b>Price error</b> (lower is better): mean absolute error in A$/MWh over the 48 half-hours.</li>
+    <li><b>Price error</b> (lower is better): mean absolute error in A$/MWh over the 47 half-hours.</li>
   </ul>
 
   <h2>Rules</h2>
   <ul>
     <li>Every day is published, including days AEMO wins.</li>
     <li>A day with no forecast committed on time shows as <i>missed</i>. Missed days are never backfilled, and scored rows are never changed.</li>
-    <li>Before the market day, only the forecast's SHA-256 hash is published, and it is independently timestamped with <a href="https://opentimestamps.org">OpenTimestamps</a>. The forecast file itself is published the next day, so anyone can check that it matches the hash. The <a href="https://github.com/OnChain-Software/nem-forecast-scoreboard/commits/main">commit history</a> holds the full record.</li>
+    <li>Before any of its half-hours begins, only the forecast's SHA-256 hash is published, and it is independently timestamped with <a href="https://opentimestamps.org">OpenTimestamps</a>. The forecast file itself is published when it is scored, so anyone can check that it matches the hash. The <a href="https://github.com/OnChain-Software/nem-forecast-scoreboard/commits/main">commit history</a> holds the full record.</li>
     <li>The scoring rules were fixed at launch. Any change will be noted here with a date, and earlier rows will not be re-scored.</li>
   </ul>
   <p class="muted">Market data source: AEMO (NEMWeb). This page is not endorsed by AEMO.</p>
@@ -91,14 +91,14 @@ function card(k, v, s) { return `<div class="card"><div class="k">${k}</div><div
 
 function summary(rows) {
   const ok = rows.filter(r => r.status === "ok");
-  const days = new Set(rows.map(r => r.market_day));
+  const days = new Set(rows.map(r => r.issue_day));
   if (!ok.length) return card("Scored region-days", "0", `Tracking since launch. ${days.size} day(s) logged.`);
   const n = ok.length;
   const sO = mean(ok.map(r => +r.ocs_spike_score)), sA = mean(ok.map(r => +r.aemo_spike_score));
   const pO = mean(ok.map(r => +r.ocs_price_error)), pA = mean(ok.map(r => +r.aemo_price_error));
   const winS = ok.filter(r => +r.ocs_spike_score < +r.aemo_spike_score).length;
   const winP = ok.filter(r => +r.ocs_price_error < +r.aemo_price_error).length;
-  const missed = new Set(rows.filter(r => r.status === "missed").map(r => r.market_day)).size;
+  const missed = new Set(rows.filter(r => r.status === "missed").map(r => r.issue_day)).size;
   const first = [...days].sort()[0];
   return [
     card("Scored region-days", n, `Since ${first}. ${missed} day(s) missed.`),
@@ -113,14 +113,14 @@ function cls(a, b) { return a === "" || b === "" ? "" : (+a < +b ? "win" : (+a >
 function render(all) {
   const region = document.getElementById("region").value;
   const rows = all.filter(r => !region || r.region === region)
-                  .sort((a, b) => b.market_day.localeCompare(a.market_day) || a.region.localeCompare(b.region));
+                  .sort((a, b) => b.issue_day.localeCompare(a.issue_day) || a.region.localeCompare(b.region));
   document.getElementById("cards").innerHTML = summary(rows);
   document.getElementById("count").textContent = `${rows.length} rows`;
   document.getElementById("rows").innerHTML = rows.map(r => {
     const link = r.status === "ok" || r.status === "late"
-      ? `<a href="forecasts/${r.market_day}.csv">csv</a> · <a href="hashes/${r.market_day}.sha256">hash</a>`
-      : (r.forecast_sha256 ? `<a href="hashes/${r.market_day}.sha256">hash</a>` : "–");
-    return `<tr><td>${r.market_day}</td><td>${r.region.replace(/1$/, "")}</td><td>${r.status}</td>
+      ? `<a href="forecasts/${r.issue_day}.csv">csv</a> · <a href="hashes/${r.issue_day}.sha256">hash</a>`
+      : (r.forecast_sha256 ? `<a href="hashes/${r.issue_day}.sha256">hash</a>` : "–");
+    return `<tr><td>${r.issue_day}</td><td>${r.region.replace(/1$/, "")}</td><td>${r.status}</td>
       <td>${r.spikes === "" || r.spikes == null ? "–" : r.spikes}</td>
       <td class="${cls(r.ocs_spike_score, r.aemo_spike_score)}">${fmt(r.ocs_spike_score, 4)}</td>
       <td>${fmt(r.aemo_spike_score, 4)}</td>

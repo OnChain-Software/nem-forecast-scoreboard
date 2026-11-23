@@ -3,16 +3,16 @@
 
 Two daily steps, both run from cron on the forecasting machine:
 
-  commit  D-1, before 13:00 AEST: hash tomorrow's forecast, timestamp the hash,
-          and commit the hash (not the forecast) to this public repo.
-  score   D+1, after 06:00 AEST: reveal the forecast, check it against the
+  commit  issue day I, before 13:00 AEST: hash the forecast for the next 24 hours,
+          timestamp the hash, and commit the hash (not the forecast) to this repo.
+  score   from 06:00 AEST on I+2: reveal the forecast, check it against the
           committed hash, score it and AEMO's 12:30 pre-dispatch against
           actual prices, and append the rows to data/results.csv.
 
 Standard library only. All times are NEM time (AEST, UTC+10, no daylight saving).
 
-Market day D runs from 04:00 on D to 04:00 on D+1: 48 half-hours, labelled by
-interval end, 04:30 on D through 04:00 on D+1.
+The scored window for issue day I is the 47 half-hours that start at or after
+the 13:00 deadline: interval ends 13:30 on I through 12:30 on I+1.
 """
 import argparse
 import csv
@@ -30,10 +30,10 @@ import zipfile
 ROOT = os.path.dirname(os.path.abspath(__file__))
 REGIONS = ["NSW1", "QLD1", "SA1", "TAS1", "VIC1"]
 SPIKE = 300.0  # A$/MWh
-DEADLINE = dt.time(13, 0)  # forecast hash must be committed by 13:00 AEST on D-1
+DEADLINE = dt.time(13, 0)  # forecast hash must be committed by 13:00 AEST on the issue day
 NEMWEB = "https://nemweb.com.au/Reports/Current"
 RESULT_FIELDS = [
-    "market_day", "region", "status", "spikes", "intervals",
+    "issue_day", "region", "status", "spikes", "intervals",
     "ocs_spike_score", "aemo_spike_score", "ocs_price_error", "aemo_price_error",
     "forecast_sha256",
 ]
@@ -42,10 +42,16 @@ FORECAST_FIELDS = ["region", "interval_end", "price_forecast", "p_over_300"]
 
 # ---------- helpers ----------
 
+N_INTERVALS = 47
+
+
 def day_intervals(day):
-    """The 48 half-hour interval ends of market day `day` (a date)."""
-    start = dt.datetime.combine(day, dt.time(4, 0))
-    return [start + dt.timedelta(minutes=30 * k) for k in range(1, 49)]
+    """Interval ends scored for issue day `day`: 13:30 on `day` to 12:30 the next day.
+
+    Every interval starts at or after the 13:00 deadline, so none is under way
+    when the forecast is locked in."""
+    start = dt.datetime.combine(day, DEADLINE)
+    return [start + dt.timedelta(minutes=30 * k) for k in range(1, N_INTERVALS + 1)]
 
 
 def fmt(ts):
@@ -103,13 +109,12 @@ def parse_nem_time(s):
 # ---------- AEMO data ----------
 
 def aemo_predispatch(day):
-    """AEMO's 12:30 D-1 pre-dispatch for market day `day`: {(region, interval_end): price}.
+    """AEMO's 12:30 pre-dispatch on issue day `day`: {(region, interval_end): price}.
 
-    This is the run published about 12:31 on D-1 (file labelled 13:00). It is the
-    first run after day-ahead bids close, and the first to cover all of day D.
+    This is the run published about 12:31 (file labelled 13:00), the first run
+    after day-ahead bids close. It covers the whole scored window.
     """
-    prev = (day - dt.timedelta(days=1)).strftime("%Y%m%d")
-    text = nemweb_file("PredispatchIS_Reports", rf"PUBLIC_PREDISPATCHIS_{prev}1300_\d+\.zip")
+    text = nemweb_file("PredispatchIS_Reports", rf"PUBLIC_PREDISPATCHIS_{day.strftime('%Y%m%d')}1300_\d+\.zip")
     wanted = set(day_intervals(day))
     out = {}
     for r in mms_table(text, "PREDISPATCH", "REGION_PRICES"):
@@ -122,14 +127,16 @@ def aemo_predispatch(day):
 
 
 def actual_prices(day):
-    """Actual 30-minute prices for market day `day`: the mean of the six 5-minute
-    dispatch prices in each half-hour (how the NEM settles since 5-minute settlement)."""
-    text = nemweb_file("Public_Prices", rf"PUBLIC_PRICES_{day.strftime('%Y%m%d')}0000_\d+\.zip")
+    """Actual 30-minute prices over the window for issue day `day`: the mean of the six
+    5-minute dispatch prices in each half-hour (how the NEM settles since 5-minute
+    settlement). The window spans two market days, so two daily files are read."""
     five = {}
-    for r in mms_table(text, "DREGION", ""):
-        if r.get("INTERVENTION", "0") != "0":
-            continue
-        five[(r["REGIONID"], parse_nem_time(r["SETTLEMENTDATE"]))] = float(r["RRP"])
+    for market_day in (day, day + dt.timedelta(days=1)):
+        text = nemweb_file("Public_Prices", rf"PUBLIC_PRICES_{market_day.strftime('%Y%m%d')}0000_\d+\.zip")
+        for r in mms_table(text, "DREGION", ""):
+            if r.get("INTERVENTION", "0") != "0":
+                continue
+            five[(r["REGIONID"], parse_nem_time(r["SETTLEMENTDATE"]))] = float(r["RRP"])
     out = {}
     for region in REGIONS:
         for end in day_intervals(day):
@@ -158,7 +165,7 @@ def read_forecast(path, day):
     expected = {(g, t) for g in REGIONS for t in day_intervals(day)}
     if set(out) != expected:
         missing, extra = expected - set(out), set(out) - expected
-        raise ValueError(f"forecast must have exactly 5 regions x 48 intervals; "
+        raise ValueError(f"forecast must have exactly 5 regions x {N_INTERVALS} intervals; "
                          f"missing {len(missing)}, unexpected {len(extra)}")
     return out
 
@@ -195,7 +202,7 @@ def existing_days():
     if not os.path.exists(path):
         return set()
     with open(path, newline="") as fh:
-        return {r["market_day"] for r in csv.DictReader(fh)}
+        return {r["issue_day"] for r in csv.DictReader(fh)}
 
 
 def append_results(rows):
@@ -210,14 +217,14 @@ def append_results(rows):
 
 
 def blank_rows(day, status, digest=""):
-    return [{"market_day": day.isoformat(), "region": g, "status": status, "forecast_sha256": digest}
+    return [{"issue_day": day.isoformat(), "region": g, "status": status, "forecast_sha256": digest}
             for g in REGIONS]
 
 
 # ---------- commands ----------
 
 def cmd_commit(args):
-    day = dt.date.fromisoformat(args.day) if args.day else today_aest() + dt.timedelta(days=1)
+    day = dt.date.fromisoformat(args.day) if args.day else today_aest()
     read_forecast(args.forecast, day)  # refuse to commit a malformed forecast
     digest = sha256_file(args.forecast)
     rel = f"hashes/{day.isoformat()}.sha256"
@@ -237,7 +244,7 @@ def cmd_commit(args):
         print("warning: 'ots' not installed; committing the hash without an independent timestamp", file=sys.stderr)
     if not args.no_git:
         git("add", *stamped)
-        git("commit", "-m", f"Forecast hash for market day {day.isoformat()}")
+        git("commit", "-m", f"Forecast hash for issue day {day.isoformat()}")
         git("push", "origin", "HEAD")
     print(f"committed {rel} ({digest})")
 
@@ -252,7 +259,7 @@ def hash_commit_time(rel):
 
 
 def cmd_score(args):
-    day = dt.date.fromisoformat(args.day) if args.day else today_aest() - dt.timedelta(days=1)
+    day = dt.date.fromisoformat(args.day) if args.day else today_aest() - dt.timedelta(days=2)
     if day.isoformat() in existing_days():
         sys.exit(f"{day} is already scored. Rows are never re-scored or replaced.")
     rel_hash = f"hashes/{day.isoformat()}.sha256"
@@ -270,16 +277,16 @@ def cmd_score(args):
             ocs = read_forecast(dest, day)
             aemo, actual = aemo_predispatch(day), actual_prices(day)
             when = None if args.no_git else hash_commit_time(rel_hash)
-            deadline = dt.datetime.combine(day - dt.timedelta(days=1), DEADLINE)
+            deadline = dt.datetime.combine(day, DEADLINE)
             status = "late" if when and when > deadline else "ok"
             rows = []
             for g in REGIONS:
                 s = score_region(g, day, ocs, aemo, actual)
                 if s is None:
-                    rows.append({"market_day": day.isoformat(), "region": g,
+                    rows.append({"issue_day": day.isoformat(), "region": g,
                                  "status": "no_aemo_data", "forecast_sha256": committed})
                 else:
-                    rows.append({"market_day": day.isoformat(), "region": g, "status": status,
+                    rows.append({"issue_day": day.isoformat(), "region": g, "status": status,
                                  "forecast_sha256": committed, **s})
     append_results(rows)
     if not args.no_git:
@@ -291,7 +298,7 @@ def cmd_score(args):
             if os.path.exists(hash_path + ".ots"):
                 to_add.append(rel_hash + ".ots")
         git("add", *to_add)
-        git("commit", "-m", f"Score market day {day.isoformat()}")
+        git("commit", "-m", f"Score forecast issued {day.isoformat()}")
         git("push", "origin", "HEAD")
     for r in rows:
         print(r)
@@ -300,12 +307,12 @@ def cmd_score(args):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    c = sub.add_parser("commit", help="hash and commit tomorrow's forecast")
+    c = sub.add_parser("commit", help="hash and commit today's forecast")
     c.add_argument("forecast", help="path to the forecast CSV (kept private until scoring)")
-    c.add_argument("--day", help="market day YYYY-MM-DD (default: tomorrow)")
+    c.add_argument("--day", help="issue day YYYY-MM-DD (default: today)")
     c.add_argument("--no-git", action="store_true", help="write files only; do not commit or push")
-    s = sub.add_parser("score", help="reveal and score a market day")
-    s.add_argument("--day", help="market day YYYY-MM-DD (default: yesterday)")
+    s = sub.add_parser("score", help="reveal and score a forecast")
+    s.add_argument("--day", help="issue day YYYY-MM-DD (default: two days ago)")
     s.add_argument("--private-dir", default=os.environ.get("OCS_FORECAST_DIR", ""),
                    help="folder holding the private forecast files, named YYYY-MM-DD.csv "
                         "(default: $OCS_FORECAST_DIR)")

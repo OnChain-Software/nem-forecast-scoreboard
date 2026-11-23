@@ -24,11 +24,11 @@ def write_forecast(path, price=50.0, p=0.1, drop=0):
 
 
 class Intervals(unittest.TestCase):
-    def test_market_day(self):
+    def test_window(self):
         ends = sb.day_intervals(DAY)
-        self.assertEqual(len(ends), 48)
-        self.assertEqual(ends[0], dt.datetime(2026, 11, 22, 4, 30))
-        self.assertEqual(ends[-1], dt.datetime(2026, 11, 23, 4, 0))
+        self.assertEqual(len(ends), 47)
+        self.assertEqual(ends[0], dt.datetime(2026, 11, 22, 13, 30))   # first half-hour starts at the deadline
+        self.assertEqual(ends[-1], dt.datetime(2026, 11, 23, 12, 30))
 
 
 class Forecast(unittest.TestCase):
@@ -41,7 +41,7 @@ class Forecast(unittest.TestCase):
     def test_valid(self):
         path = os.path.join(self.tmp, "f.csv")
         write_forecast(path)
-        self.assertEqual(len(sb.read_forecast(path, DAY)), 240)
+        self.assertEqual(len(sb.read_forecast(path, DAY)), 235)
 
     def test_incomplete_rejected(self):
         path = os.path.join(self.tmp, "f.csv")
@@ -64,10 +64,10 @@ class Scoring(unittest.TestCase):
         ocs = {("SA1", t): ((450.0, 0.8) if i == 0 else (100.0, 0.0)) for i, t in enumerate(ends)}
         s = sb.score_region("SA1", DAY, ocs, aemo, actual)
         self.assertEqual(s["spikes"], 1)
-        self.assertAlmostEqual(s["ocs_spike_score"], round(0.2 ** 2 / 48, 6))
-        self.assertAlmostEqual(s["aemo_spike_score"], round(1 / 48, 6))   # one false alarm
-        self.assertAlmostEqual(s["ocs_price_error"], round(50 / 48, 2))
-        self.assertAlmostEqual(s["aemo_price_error"], round((100 + 300 + 46 * 10) / 48, 2))
+        self.assertAlmostEqual(s["ocs_spike_score"], round(0.2 ** 2 / 47, 6))
+        self.assertAlmostEqual(s["aemo_spike_score"], round(1 / 47, 6))   # one false alarm
+        self.assertAlmostEqual(s["ocs_price_error"], round(50 / 47, 2))
+        self.assertAlmostEqual(s["aemo_price_error"], round((100 + 300 + 45 * 10) / 47, 2))
 
     def test_missing_aemo_data(self):
         self.assertIsNone(sb.score_region("SA1", DAY, {}, {}, {}))
