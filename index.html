@@ -75,6 +75,10 @@
     <li>Before any of its half-hours begins, only the forecast's SHA-256 hash is published, and it is independently timestamped with <a href="https://opentimestamps.org">OpenTimestamps</a>. The forecast file itself is published when it is scored, so anyone can check that it matches the hash. The <a href="https://github.com/OnChain-Software/nem-forecast-scoreboard/commits/main">commit history</a> holds the full record.</li>
     <li>The scoring rules were fixed at launch. Any change will be noted here with a date, and earlier rows will not be re-scored.</li>
   </ul>
+  <h2>Changes</h2>
+  <ul>
+    <li><b>28 Nov 2026, forecast inputs:</b> from issue day 29 Nov, the OCS forecast also uses AEMO's 12:30 pre-dispatch run, published about 12:32. This is the same run used as the AEMO comparator. Before this, the forecast used only the 12:00 run, which ends at 04:00 the next day, so the last 17 half-hours had no pre-dispatch input. The model, the deadline and the scoring rules are unchanged, and earlier rows are not re-scored.</li>
+  </ul>
   <p class="muted">Market data source: AEMO (NEMWeb). This page is not endorsed by AEMO.</p>
 </main>
 <script>

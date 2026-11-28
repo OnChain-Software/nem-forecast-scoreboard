@@ -26,6 +26,10 @@ The forecast may use any public data published before 12:45 on I, including AEMO
 3. A forecast hash is committed once and never replaced. A scored day is never re-scored. The script refuses both.
 4. Scoring rules are fixed. Any change gets a dated note on the page and in this README.
 
+## Changes
+
+- **2026-11-28, forecast inputs.** From issue day 2026-11-29, the OCS forecast also uses AEMO's 12:30 pre-dispatch run (the `…1300` file, published about 12:32), which is the comparator run. Before this, it used only the 12:00 run, which ends at 04:00 on I+1. The scoring rules are unchanged, and earlier rows are not re-scored.
+
 ## Forecast file format
 
 Write the forecast to `$OCS_FORECAST_DIR/YYYY-MM-DD.csv`, where the date is the issue day. Keep that folder private and outside this repo. The file must have exactly 235 rows: 5 regions × 47 half-hours.
